@@ -31,23 +31,17 @@ struct lz4_header {
 	uint8_t header_sha256[32];
 };
 
-static int gi_bl3_lz4_wrap(char const *fin, char *fout,
-		size_t fout_sz)
+static int gi_bl3_lz4_wrap(char const *fin)
 {
 	struct stat st;
 	struct lz4_header hdr;
 	EVP_MD_CTX *ctx = NULL;
 	uint8_t *src = NULL;
 	uint8_t *dst = NULL;
+	char path[] = "/tmp/gxlimg.bl3.XXXXXX";
 	int fdin = -1, fdout = -1;
 	int ret;
 	int clen;
-
-	ret = snprintf(fout, fout_sz, "%s.lz4", fin);
-	if((ret < 0) || ((size_t)ret >= fout_sz)) {
-		ret = -EINVAL;
-		goto out;
-	}
 
 	fdin = open(fin, O_RDONLY);
 	if(fdin < 0) {
@@ -154,8 +148,14 @@ static int gi_bl3_lz4_wrap(char const *fin, char *fout,
 		goto out;
 	}
 
-	fdout = open(fout, O_WRONLY | O_CREAT | O_TRUNC, FOUT_MODE_DFT);
+	fdout = mkstemp(path);
 	if(fdout < 0) {
+		ret = -errno;
+		goto out;
+	}
+
+	ret = unlink(path);
+	if(ret < 0) {
 		ret = -errno;
 		goto out;
 	}
@@ -170,9 +170,15 @@ static int gi_bl3_lz4_wrap(char const *fin, char *fout,
 		goto out;
 	}
 
-	ret = 0;
+	ret = lseek(fdout, 0, SEEK_SET);
+	if(ret < 0) {
+		ret = -errno;
+		goto out;
+	}
+
+	ret = fdout;
 out:
-	if(fdout >= 0)
+	if(ret < 0)
 		close(fdout);
 	if(fdin >= 0)
 		close(fdin);
@@ -193,8 +199,6 @@ int gi_bl3_sign_img(char const *fin, char const *fout,
 		char const *compress)
 {
 	struct amlsblk asb;
-	char lz4_path[512];
-	char const *input = fin;
 	int fdin = -1, fdout = -1, ret;
 
 	DBG("Sign bl3x %s in %s\n", fin, fout);
@@ -202,17 +206,17 @@ int gi_bl3_sign_img(char const *fin, char const *fout,
 	if(compress != NULL) {
 		if(strcmp(compress, "lz4") != 0)
 			return -EINVAL;
-		ret = gi_bl3_lz4_wrap(fin, lz4_path, sizeof(lz4_path));
+		ret = gi_bl3_lz4_wrap(fin);
 		if(ret < 0)
 			return ret;
-		input = lz4_path;
-	}
-
-	fdin = open(input, O_RDONLY);
-	if(fdin < 0) {
-		PERR("Cannot open file %s", input);
-		ret = -errno;
-		goto out;
+		fdin = ret;
+	} else {
+		fdin = open(fin, O_RDONLY);
+		if(fdin < 0) {
+			PERR("Cannot open file %s", fin);
+			ret = -errno;
+			goto out;
+		}
 	}
 
 	fdout = open(fout, O_RDWR | O_CREAT, FOUT_MODE_DFT);
@@ -244,8 +248,6 @@ out:
 		close(fdout);
 	if(fdin >= 0)
 		close(fdin);
-	if(input != fin)
-		(void)unlink(input);
 	return ret;
 }
 
